@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <stdio.h>
+#include <string.h>
 #include <sepol/debug.h>
 #include <sepol/policydb/policydb.h>
 #include <sepol/policydb/expand.h>
@@ -23,8 +24,9 @@
 #include <sepol/policydb/conditional.h>
 
 void usage(char *arg0) {
-	fprintf(stderr, "%s -s <source type> -t <target type> -c <class> -p <perm> -P <policy file> -o <output file>\n", arg0);
-	fprintf(stderr, "%s -Z permissive_type -P <policy file> -o <output file>\n", arg0);
+	fprintf(stderr, "%s -s <source type> -t <target type> -c <class> -p <perm> -P <policy file> [-o <output file>]\n", arg0);
+	fprintf(stderr, "%s -Z type_to_make_permissive -P <policy file> [-o <output file>]\n", arg0);
+	fprintf(stderr, "%s -z type_to_make_nonpermissive -P <policy file> [-o <output file>]\n", arg0);
 	exit(1);
 }
 
@@ -39,14 +41,20 @@ void *cmalloc(size_t s) {
 
 void set_attr(char *type, policydb_t *policy, int value) {
 	type_datum_t *attr = hashtab_search(policy->p_types.table, type);
-	if (!attr)
+	if (!attr) {
+		fprintf(stderr, "%s not present in the policy\n", type); 
 		exit(1);
+	}
 
-	if (attr->flavor != TYPE_ATTRIB)
+	if (attr->flavor != TYPE_ATTRIB) {
+		fprintf(stderr, "%s is not an attribute\n", type); 
 		exit(1);
+	}
 
-	if (ebitmap_set_bit(&attr->types, value - 1, 1))
+	if (ebitmap_set_bit(&attr->types, value - 1, 1)) {
+		fprintf(stderr, "error setting attibute: %s\n", type);
 		exit(1);
+	}
 }
 
 void create_domain(char *d, policydb_t *policy) {
@@ -54,13 +62,17 @@ void create_domain(char *d, policydb_t *policy) {
 	if(src)
 		return;
 
-	type_datum_t *typdatum = (type_datum_t *) malloc(sizeof(type_datum_t));
+	type_datum_t *typdatum = (type_datum_t *) cmalloc(sizeof(type_datum_t));
 	type_datum_init(typdatum);
 	typdatum->primary = 1;
 	typdatum->flavor = TYPE_TYPE;
 
 	uint32_t value = 0;
-	int r = symtab_insert(policy, SYM_TYPES, strdup(d), typdatum, SCOPE_DECL, 1, &value);
+	char *type = strdup(d);
+	if (type == NULL)  {
+		exit(1);
+	}
+	int r = symtab_insert(policy, SYM_TYPES, type, typdatum, SCOPE_DECL, 1, &value);
 	typdatum->s.value = value;
 
 	fprintf(stderr, "source type %s does not exist: %d,%d\n", d, r, value);
@@ -287,7 +299,7 @@ int main(int argc, char **argv)
 			return 1;
 		}
 	} else {
-		create_domain(source, policy);
+		create_domain(source, &policydb);
 		if (add_rule(source, target, class, perm, &policydb)) {
 			fprintf(stderr, "Could not add rule\n");
 			return 1;
