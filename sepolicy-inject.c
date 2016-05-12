@@ -26,6 +26,7 @@
 #include "tokenize.h"
 
 void usage(char *arg0) {
+	fprintf(stderr, "Only one of the following can be run at a time\n");
 	fprintf(stderr, "%s -s <source type> -t <target type> -c <class> -p <perm> -P <policy file> [-o <output file>]\n", arg0);
 	fprintf(stderr, "%s -Z type_to_make_permissive -P <policy file> [-o <output file>]\n", arg0);
 	fprintf(stderr, "%s -z type_to_make_nonpermissive -P <policy file> [-o <output file>]\n", arg0);
@@ -59,10 +60,10 @@ void set_attr(char *type, policydb_t *policy, int value) {
 	}
 }
 
-void create_domain(char *d, policydb_t *policy) {
+int create_domain(char *d, policydb_t *policy) {
 	symtab_datum_t *src = hashtab_search(policy->p_types.table, d);
 	if(src)
-		return;
+		return src->value;
 
 	type_datum_t *typdatum = (type_datum_t *) cmalloc(sizeof(type_datum_t));
 	type_datum_init(typdatum);
@@ -75,9 +76,12 @@ void create_domain(char *d, policydb_t *policy) {
 		exit(1);
 	}
 	int r = symtab_insert(policy, SYM_TYPES, type, typdatum, SCOPE_DECL, 1, &value);
+	if (r) {
+		fprintf(stderr, "Failed to insert type into symtab\n");
+		exit(1);
+	}	
 	typdatum->s.value = value;
 
-	fprintf(stderr, "source type %s does not exist: %d,%d\n", d, r, value);
 	if (ebitmap_set_bit(&policy->global->branch_list->declared.scope[SYM_TYPES], value - 1, 1)) {
 		exit(1);
 	}
@@ -96,22 +100,19 @@ void create_domain(char *d, policydb_t *policy) {
 		type_set_expand(&policy->role_val_to_struct[i]->types, &policy->role_val_to_struct[i]->cache, policy, 0);
 	}
 
-
 	src = hashtab_search(policy->p_types.table, d);
-	if(!src)
+	if(!src) {
+		fprintf(stderr, "creating %s failed\n",d);
 		exit(1);
+	}
 
 	extern int policydb_index_decls(policydb_t * p);
-	if(policydb_index_decls(policy))
+	if(policydb_index_decls(policy)) {
 		exit(1);
-
-	if(policydb_index_classes(policy))
-		exit(1);
-
-	if(policydb_index_others(NULL, policy, 1))
-		exit(1);
+	}
 
 	set_attr("domain", policy, value);
+	return value;
 }
 
 int add_rule(char *s, char *t, char *c, char **p, int num_perms, policydb_t *policy) {
@@ -234,6 +235,11 @@ int main(int argc, char **argv)
 	char ch;
 	FILE *fp;
 	int permissive_value = 0;
+	int typeval;
+	type_datum_t *type;
+#define SEL_ADD_RULE 1
+#define SEL_PERMISSIVE 2
+	int selected = 0;
 	
 	
         struct option long_options[] = {
@@ -251,6 +257,10 @@ int main(int argc, char **argv)
         while ((ch = getopt_long(argc, argv, "s:t:c:p:P:o:Z:z:", long_options, NULL)) != -1) {
                 switch (ch) {
                 case 's':
+			if (selected) {
+				usage(argv[0]);
+			}	
+			selected = SEL_ADD_RULE;
                         source = optarg;
                         break;
                 case 't':
@@ -274,11 +284,19 @@ int main(int argc, char **argv)
 			outfile = optarg;
 			break;
 		case 'Z':
-			permissive = optarg;
+			if (selected) {
+				usage(argv[0]);
+			}	
+			selected = SEL_PERMISSIVE;
+			source = optarg;
 			permissive_value = 1;
 			break;
 		case 'z':
-			permissive = optarg;
+			if (selected) {
+				usage(argv[0]);
+			}	
+			selected = SEL_PERMISSIVE;
+			source = optarg;
 			permissive_value = 0;
 			break;
 		default:
@@ -286,7 +304,7 @@ int main(int argc, char **argv)
 		}
 	}
 
-	if (((!source || !target || !class || !perm) && !permissive) || !policy)
+	if (!selected || !policy)
 		usage(argv[0]);
 
 	if(!outfile)
@@ -303,24 +321,27 @@ int main(int argc, char **argv)
         if (policydb_load_isids(&policydb, &sidtab))
 		return 1;
 
-	if (permissive) {
-		type_datum_t *type;
-		create_domain(permissive, &policydb);
-        	type = hashtab_search(policydb.p_types.table, permissive);
-        	if (type == NULL) {
-                	fprintf(stderr, "type %s does not exist\n", permissive);
-                	return 1;
-        	}
-		if (ebitmap_set_bit(&policydb.permissive_map, type->s.value, permissive_value)) {
+	type = hashtab_search(policydb.p_types.table, source);
+	if (type == NULL) {
+		fprintf(stderr, "type %s does not exist, creating\n", source);
+		typeval = create_domain(source, &policydb);
+	} else {
+		typeval = type->s.value;
+	}
+
+	if (selected == SEL_PERMISSIVE) {
+		if (ebitmap_set_bit(&policydb.permissive_map, typeval, permissive_value)) {
 			fprintf(stderr, "Could not set bit in permissive map\n");
 			return 1;
 		}
-	} else {
-		create_domain(source, &policydb);
-		if (add_rule(source, target, class, perm, &policydb)) {
+	} else if (selected == SEL_ADD_RULE) {
+		if (add_rule(source, target, class, perms, num_perms, &policydb)) {
 			fprintf(stderr, "Could not add rule\n");
 			return 1;
 		}
+	} else {
+		fprintf(stderr, "Something strange happened\n");
+		return 1;
 	}
 
 	fp = fopen(outfile, "w");
@@ -333,7 +354,6 @@ int main(int argc, char **argv)
 	outpf.type = PF_USE_STDIO;
 	outpf.fp = fp;
 	
-
 	if (policydb_write(&policydb, &outpf)) {
 		fprintf(stderr, "Could not write policy\n");
 		return 1;
