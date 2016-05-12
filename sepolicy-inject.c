@@ -23,6 +23,8 @@
 #include <sepol/policydb/avrule_block.h>
 #include <sepol/policydb/conditional.h>
 
+#include "tokenize.h"
+
 void usage(char *arg0) {
 	fprintf(stderr, "%s -s <source type> -t <target type> -c <class> -p <perm> -P <policy file> [-o <output file>]\n", arg0);
 	fprintf(stderr, "%s -Z type_to_make_permissive -P <policy file> [-o <output file>]\n", arg0);
@@ -112,7 +114,7 @@ void create_domain(char *d, policydb_t *policy) {
 	set_attr("domain", policy, value);
 }
 
-int add_rule(char *s, char *t, char *c, char *p, policydb_t *policy) {
+int add_rule(char *s, char *t, char *c, char **p, int num_perms, policydb_t *policy) {
 	type_datum_t *src, *tgt;
 	class_datum_t *cls;
 	perm_datum_t *perm;
@@ -134,17 +136,25 @@ int add_rule(char *s, char *t, char *c, char *p, policydb_t *policy) {
 		fprintf(stderr, "class %s does not exist\n", c);
 		return 1;
 	}
-	perm = hashtab_search(cls->permissions.table, p);
-	if (perm == NULL) {
-		if (cls->comdatum == NULL) {
-			fprintf(stderr, "perm %s does not exist in class %s\n", p, c);
-			return 1;
-		}
-		perm = hashtab_search(cls->comdatum->permissions.table, p);
+
+	uint32_t data = 0;
+
+	int i = 0;
+	while (p[i]) {
+		perm = hashtab_search(cls->permissions.table, p[i]);
 		if (perm == NULL) {
-			fprintf(stderr, "perm %s does not exist in class %s\n", p, c);
-			return 1;
+			if (cls->comdatum == NULL) {
+				fprintf(stderr, "perm %s does not exist in class %s\n", p[i], c);
+				return 1;
+			}
+			perm = hashtab_search(cls->comdatum->permissions.table, p[i]);
+			if (perm == NULL) {
+				fprintf(stderr, "perm %s does not exist in class %s\n", p[i], c);
+				return 1;
+			}
 		}
+		data |= 1U << (perm->s.value - 1);
+		i++;
 	}
 
 	// See if there is already a rule
@@ -156,7 +166,7 @@ int add_rule(char *s, char *t, char *c, char *p, policydb_t *policy) {
 
 	if (av == NULL) {
 		av = cmalloc(sizeof av);
-		av->data |= 1U << (perm->s.value - 1);
+		av->data = data;
 		int ret = avtab_insert(&policy->te_avtab, &key, av);
 		if (ret) {
 			fprintf(stderr, "Error inserting into avtab\n");
@@ -164,7 +174,7 @@ int add_rule(char *s, char *t, char *c, char *p, policydb_t *policy) {
 		}	
 	}
 
-	av->data |= 1U << (perm->s.value - 1);
+	av->data |= data;
 
 	return 0;
 }
@@ -215,7 +225,9 @@ int load_policy(char *filename, policydb_t *policydb, struct policy_file *pf) {
 
 int main(int argc, char **argv)
 {
-	char *policy = NULL, *source = NULL, *target = NULL, *class = NULL, *perm = NULL, *outfile = NULL, *permissive = NULL;
+	char *policy = NULL, *source = NULL, *target = NULL, *class = NULL, *outfile = NULL;
+	char **perms = NULL;
+	size_t num_perms = 0;
 	policydb_t policydb;
 	struct policy_file pf, outpf;
 	sidtab_t sidtab;
@@ -247,9 +259,14 @@ int main(int argc, char **argv)
                 case 'c':
                         class = optarg;
                         break;
-                case 'p':
-                        perm = optarg;
+                case 'p': {
+			perms = str_split(optarg, ',');
+			if (perms == NULL) {
+				fprintf(stderr, "Could not tokenize permissions\n");
+				return 1;
+			}
                         break;
+		}
                 case 'P':
                         policy = optarg;
                         break;

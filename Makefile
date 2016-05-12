@@ -8,4 +8,4 @@ LDLIBS=$(LIBDIR)/libsepol.a
 
 all: sepolicy-inject
 
-sepolicy-inject: sepolicy-inject.c
+sepolicy-inject: sepolicy-inject.c tokenize.c
