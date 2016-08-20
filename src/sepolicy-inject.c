@@ -6,7 +6,6 @@
  *
  */
 
-#include <getopt.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <sys/mman.h>
@@ -23,37 +22,10 @@
 #include <sepol/policydb/avrule_block.h>
 #include <sepol/policydb/conditional.h>
 
+#include "private.h"
 #include "tokenize.h"
 
-#define SEL_ADD_RULE 1
-#define SEL_PERMISSIVE 2
-
-typedef struct {
-	// common
-	const char *policy;
-	const char *outfile;
-	const char *source;
-	int selected;
-
-	// SEL_ADD_RULE
-	const char *target;
-	const char *class;
-	char *perm;
-
-	// SEL_PERMISSIVE
-	int permissive_value;
-} context_t;
-
-void usage(char *arg0)
-{
-	fprintf(stderr, "Only one of the following can be run at a time\n");
-	fprintf(stderr, "%s -s <source type> -t <target type> -c <class> -p <perm> -P <policy file> [-o <output file>]\n", arg0);
-	fprintf(stderr, "%s -Z type_to_make_permissive -P <policy file> [-o <output file>]\n", arg0);
-	fprintf(stderr, "%s -z type_to_make_nonpermissive -P <policy file> [-o <output file>]\n", arg0);
-	exit(1);
-}
-
-void *cmalloc(size_t s)
+static void *cmalloc(size_t s)
 {
 	void *t = malloc(s);
 	if (t == NULL) {
@@ -63,7 +35,7 @@ void *cmalloc(size_t s)
 	return t;
 }
 
-void set_attr(const char *type, policydb_t *policy, int value)
+static void set_attr(const char *type, policydb_t *policy, int value)
 {
 	type_datum_t *attr = hashtab_search(policy->p_types.table, (const hashtab_key_t)type);
 	if (!attr) {
@@ -82,7 +54,7 @@ void set_attr(const char *type, policydb_t *policy, int value)
 	}
 }
 
-int create_domain(const char *d, policydb_t *policy)
+static int create_domain(const char *d, policydb_t *policy)
 {
 	symtab_datum_t *src = hashtab_search(policy->p_types.table, (const hashtab_key_t)d);
 	if (src)
@@ -138,7 +110,7 @@ int create_domain(const char *d, policydb_t *policy)
 	return value;
 }
 
-int add_rule(const char *s, const char *t, const char *c, char **p, policydb_t *policy)
+static int add_rule(const char *s, const char *t, const char *c, char **p, policydb_t *policy)
 {
 	type_datum_t *src, *tgt;
 	class_datum_t *cls;
@@ -205,7 +177,7 @@ int add_rule(const char *s, const char *t, const char *c, char **p, policydb_t *
 }
 
 
-int load_policy(const char *filename, policydb_t *policydb, struct policy_file *pf)
+static int load_policy(const char *filename, policydb_t *policydb, struct policy_file *pf)
 {
 	int fd;
 	struct stat sb;
@@ -255,7 +227,7 @@ int load_policy(const char *filename, policydb_t *policydb, struct policy_file *
 	return 0;
 }
 
-static int run_action(context_t *context)
+int sepolicy_inject_internal_run_action(context_t *context)
 {
 	char **perms = NULL;
 	policydb_t policydb;
@@ -358,7 +330,7 @@ int sepolicy_inject_rule(const char *source, const char *target, const char *cla
 		.permissive_value = 0,
 	};
 
-	int rc = run_action(&context);
+	int rc = sepolicy_inject_internal_run_action(&context);
 	free(context.perm);
 	return rc;
 }
@@ -374,92 +346,5 @@ int sepolicy_set_permissive(const char *source, int value, const char *policy, c
 		.permissive_value = value,
 	};
 
-	return run_action(&context);
-}
-
-int main(int argc, char **argv)
-{
-	char *policy = NULL, *source = NULL, *target = NULL, *class = NULL, *outfile = NULL;
-	char *perm = NULL;
-	int ch;
-	int permissive_value = 0;
-	int selected = 0;
-	int rc;
-
-	struct option long_options[] = {
-		{"source", required_argument, NULL, 's'},
-		{"target", required_argument, NULL, 't'},
-		{"class", required_argument, NULL, 'c'},
-		{"perm", required_argument, NULL, 'p'},
-		{"policy", required_argument, NULL, 'P'},
-		{"output", required_argument, NULL, 'o'},
-		{"permissive", required_argument, NULL, 'Z'},
-		{"not-permissive", required_argument, NULL, 'z'},
-		{NULL, 0, NULL, 0}
-	};
-
-	while ((ch = getopt_long(argc, argv, "s:t:c:p:P:o:Z:z:", long_options, NULL)) != -1) {
-		switch (ch) {
-			case 's':
-				if (selected) {
-					usage(argv[0]);
-				}
-				selected = SEL_ADD_RULE;
-				source = optarg;
-				break;
-			case 't':
-				target = optarg;
-				break;
-			case 'c':
-				class = optarg;
-				break;
-			case 'p': {
-				perm = optarg;
-				break;
-			}
-			case 'P':
-				policy = optarg;
-				break;
-			case 'o':
-				outfile = optarg;
-				break;
-			case 'Z':
-				if (selected) {
-					usage(argv[0]);
-				}
-				selected = SEL_PERMISSIVE;
-				source = optarg;
-				permissive_value = 1;
-				break;
-			case 'z':
-				if (selected) {
-					usage(argv[0]);
-				}
-				selected = SEL_PERMISSIVE;
-				source = optarg;
-				permissive_value = 0;
-				break;
-			default:
-				usage(argv[0]);
-		}
-	}
-
-	context_t context = {
-		.policy = policy,
-		.outfile = outfile,
-		.source = source,
-		.selected = selected,
-
-		.target = target,
-		.class = class,
-		.perm = perm,
-
-		.permissive_value = permissive_value,
-	};
-
-	rc = run_action(&context);
-	if (rc==2) {
-		usage(argv[0]);
-	}
-	return rc;
+	return sepolicy_inject_internal_run_action(&context);
 }
