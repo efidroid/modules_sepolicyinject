@@ -115,7 +115,7 @@ int create_domain(char *d, policydb_t *policy) {
 	return value;
 }
 
-int add_rule(char *s, char *t, char *c, char **p, int num_perms, policydb_t *policy) {
+int add_rule(char *s, char *t, char *c, char **p, policydb_t *policy) {
 	type_datum_t *src, *tgt;
 	class_datum_t *cls;
 	perm_datum_t *perm;
@@ -235,7 +235,6 @@ int main(int argc, char **argv)
 {
 	char *policy = NULL, *source = NULL, *target = NULL, *class = NULL, *outfile = NULL;
 	char **perms = NULL;
-	size_t num_perms = 0;
 	policydb_t policydb;
 	struct policy_file pf, outpf;
 	sidtab_t sidtab;
@@ -342,7 +341,7 @@ int main(int argc, char **argv)
 			return 1;
 		}
 	} else if (selected == SEL_ADD_RULE) {
-		if (add_rule(source, target, class, perms, num_perms, &policydb)) {
+		if (add_rule(source, target, class, perms, &policydb)) {
 			fprintf(stderr, "Could not add rule\n");
 			return 1;
 		}
