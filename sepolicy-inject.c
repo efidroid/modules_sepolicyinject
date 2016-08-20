@@ -203,6 +203,7 @@ int load_policy(char *filename, policydb_t *policydb, struct policy_file *pf) {
 	if (map == MAP_FAILED) {
 		fprintf(stderr, "Can't mmap '%s':  %s\n",
 				filename, strerror(errno));
+		close(fd);
 		return 1;
 	}
 
@@ -212,14 +213,20 @@ int load_policy(char *filename, policydb_t *policydb, struct policy_file *pf) {
 	pf->len = sb.st_size;
 	if (policydb_init(policydb)) {
 		fprintf(stderr, "policydb_init: Out of memory!\n");
+		munmap(map, sb.st_size);
+		close(fd);
 		return 1;
 	}
 	ret = policydb_read(policydb, pf, 1);
 	if (ret) {
 		fprintf(stderr, "error(s) encountered while parsing configuration\n");
+		munmap(map, sb.st_size);
+		close(fd);
 		return 1;
 	}
 
+	munmap(map, sb.st_size);
+	close(fd);
 	return 0;
 }
 	
@@ -356,6 +363,7 @@ int main(int argc, char **argv)
 	
 	if (policydb_write(&policydb, &outpf)) {
 		fprintf(stderr, "Could not write policy\n");
+		fclose(fp);
 		return 1;
 	}
 	
