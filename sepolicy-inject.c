@@ -25,6 +25,25 @@
 
 #include "tokenize.h"
 
+#define SEL_ADD_RULE 1
+#define SEL_PERMISSIVE 2
+
+typedef struct {
+	// common
+	const char *policy;
+	const char *outfile;
+	const char *source;
+	int selected;
+
+	// SEL_ADD_RULE
+	const char *target;
+	const char *class;
+	char *perm;
+
+	// SEL_PERMISSIVE
+	int permissive_value;
+} context_t;
+
 void usage(char *arg0)
 {
 	fprintf(stderr, "Only one of the following can be run at a time\n");
@@ -44,9 +63,9 @@ void *cmalloc(size_t s)
 	return t;
 }
 
-void set_attr(char *type, policydb_t *policy, int value)
+void set_attr(const char *type, policydb_t *policy, int value)
 {
-	type_datum_t *attr = hashtab_search(policy->p_types.table, type);
+	type_datum_t *attr = hashtab_search(policy->p_types.table, (const hashtab_key_t)type);
 	if (!attr) {
 		fprintf(stderr, "%s not present in the policy\n", type);
 		exit(1);
@@ -63,9 +82,9 @@ void set_attr(char *type, policydb_t *policy, int value)
 	}
 }
 
-int create_domain(char *d, policydb_t *policy)
+int create_domain(const char *d, policydb_t *policy)
 {
-	symtab_datum_t *src = hashtab_search(policy->p_types.table, d);
+	symtab_datum_t *src = hashtab_search(policy->p_types.table, (const hashtab_key_t)d);
 	if (src)
 		return src->value;
 
@@ -104,7 +123,7 @@ int create_domain(char *d, policydb_t *policy)
 		type_set_expand(&policy->role_val_to_struct[i]->types, &policy->role_val_to_struct[i]->cache, policy, 0);
 	}
 
-	src = hashtab_search(policy->p_types.table, d);
+	src = hashtab_search(policy->p_types.table, (const hashtab_key_t)d);
 	if (!src) {
 		fprintf(stderr, "creating %s failed\n",d);
 		exit(1);
@@ -119,7 +138,7 @@ int create_domain(char *d, policydb_t *policy)
 	return value;
 }
 
-int add_rule(char *s, char *t, char *c, char **p, policydb_t *policy)
+int add_rule(const char *s, const char *t, const char *c, char **p, policydb_t *policy)
 {
 	type_datum_t *src, *tgt;
 	class_datum_t *cls;
@@ -127,17 +146,17 @@ int add_rule(char *s, char *t, char *c, char **p, policydb_t *policy)
 	avtab_datum_t *av;
 	avtab_key_t key;
 
-	src = hashtab_search(policy->p_types.table, s);
+	src = hashtab_search(policy->p_types.table, (const hashtab_key_t)s);
 	if (src == NULL) {
 		fprintf(stderr, "source type %s does not exist\n", s);
 		return 1;
 	}
-	tgt = hashtab_search(policy->p_types.table, t);
+	tgt = hashtab_search(policy->p_types.table, (const hashtab_key_t)t);
 	if (tgt == NULL) {
 		fprintf(stderr, "target type %s does not exist\n", t);
 		return 1;
 	}
-	cls = hashtab_search(policy->p_classes.table, c);
+	cls = hashtab_search(policy->p_classes.table, (const hashtab_key_t)c);
 	if (cls == NULL) {
 		fprintf(stderr, "class %s does not exist\n", c);
 		return 1;
@@ -186,7 +205,7 @@ int add_rule(char *s, char *t, char *c, char **p, policydb_t *policy)
 }
 
 
-int load_policy(char *filename, policydb_t *policydb, struct policy_file *pf)
+int load_policy(const char *filename, policydb_t *policydb, struct policy_file *pf)
 {
 	int fd;
 	struct stat sb;
@@ -236,91 +255,37 @@ int load_policy(char *filename, policydb_t *policydb, struct policy_file *pf)
 	return 0;
 }
 
-
-int main(int argc, char **argv)
+static int run_action(context_t *context)
 {
-	char *policy = NULL, *source = NULL, *target = NULL, *class = NULL, *outfile = NULL;
 	char **perms = NULL;
 	policydb_t policydb;
 	struct policy_file pf, outpf;
 	sidtab_t sidtab;
-	int ch;
 	FILE *fp;
-	int permissive_value = 0;
 	int typeval;
 	type_datum_t *type;
-#define SEL_ADD_RULE 1
-#define SEL_PERMISSIVE 2
-	int selected = 0;
 
-
-	struct option long_options[] = {
-		{"source", required_argument, NULL, 's'},
-		{"target", required_argument, NULL, 't'},
-		{"class", required_argument, NULL, 'c'},
-		{"perm", required_argument, NULL, 'p'},
-		{"policy", required_argument, NULL, 'P'},
-		{"output", required_argument, NULL, 'o'},
-		{"permissive", required_argument, NULL, 'Z'},
-		{"not-permissive", required_argument, NULL, 'z'},
-		{NULL, 0, NULL, 0}
-	};
-
-	while ((ch = getopt_long(argc, argv, "s:t:c:p:P:o:Z:z:", long_options, NULL)) != -1) {
-		switch (ch) {
-			case 's':
-				if (selected) {
-					usage(argv[0]);
-				}
-				selected = SEL_ADD_RULE;
-				source = optarg;
-				break;
-			case 't':
-				target = optarg;
-				break;
-			case 'c':
-				class = optarg;
-				break;
-			case 'p': {
-				perms = str_split(optarg, ',');
-				if (perms == NULL) {
-					fprintf(stderr, "Could not tokenize permissions\n");
-					return 1;
-				}
-				break;
-			}
-			case 'P':
-				policy = optarg;
-				break;
-			case 'o':
-				outfile = optarg;
-				break;
-			case 'Z':
-				if (selected) {
-					usage(argv[0]);
-				}
-				selected = SEL_PERMISSIVE;
-				source = optarg;
-				permissive_value = 1;
-				break;
-			case 'z':
-				if (selected) {
-					usage(argv[0]);
-				}
-				selected = SEL_PERMISSIVE;
-				source = optarg;
-				permissive_value = 0;
-				break;
-			default:
-				usage(argv[0]);
-		}
-	}
+	int selected = context->selected;
+	int permissive_value = context->permissive_value;
+	const char *policy = context->policy;
+	const char *source = context->source;
+	const char *target = context->target;
+	const char *class = context->class;
+	const char *outfile = context->outfile;
 
 	if (!selected || !policy)
-		usage(argv[0]);
+		return 2;
 
 	if (!outfile)
 		outfile = policy;
+
+	if (context->perm) {
+		perms = str_split(context->perm, ',');
+		if (perms == NULL) {
+			fprintf(stderr, "Could not tokenize permissions\n");
+			return 1;
+		}
+	}
 
 	sepol_set_policydb(&policydb);
 	sepol_set_sidtab(&sidtab);
@@ -333,7 +298,7 @@ int main(int argc, char **argv)
 	if (policydb_load_isids(&policydb, &sidtab))
 		return 1;
 
-	type = hashtab_search(policydb.p_types.table, source);
+	type = hashtab_search(policydb.p_types.table, (const hashtab_key_t)source);
 	if (type == NULL) {
 		fprintf(stderr, "type %s does not exist, creating\n", source);
 		typeval = create_domain(source, &policydb);
@@ -376,4 +341,125 @@ int main(int argc, char **argv)
 	fclose(fp);
 
 	return 0;
+}
+
+int sepolicy_inject_rule(const char *source, const char *target, const char *class, const char *perm, const char *policy, const char *outfile)
+{
+	context_t context = {
+		.policy = policy,
+		.outfile = outfile,
+		.source = source,
+		.selected = SEL_ADD_RULE,
+
+		.target = target,
+		.class = class,
+		.perm = strdup(perm),
+
+		.permissive_value = 0,
+	};
+
+	int rc = run_action(&context);
+	free(context.perm);
+	return rc;
+}
+
+int sepolicy_set_permissive(const char *source, int value, const char *policy, const char *outfile)
+{
+	context_t context = {
+		.policy = policy,
+		.outfile = outfile,
+		.source = source,
+		.selected = SEL_PERMISSIVE,
+
+		.permissive_value = value,
+	};
+
+	return run_action(&context);
+}
+
+int main(int argc, char **argv)
+{
+	char *policy = NULL, *source = NULL, *target = NULL, *class = NULL, *outfile = NULL;
+	char *perm = NULL;
+	int ch;
+	int permissive_value = 0;
+	int selected = 0;
+	int rc;
+
+	struct option long_options[] = {
+		{"source", required_argument, NULL, 's'},
+		{"target", required_argument, NULL, 't'},
+		{"class", required_argument, NULL, 'c'},
+		{"perm", required_argument, NULL, 'p'},
+		{"policy", required_argument, NULL, 'P'},
+		{"output", required_argument, NULL, 'o'},
+		{"permissive", required_argument, NULL, 'Z'},
+		{"not-permissive", required_argument, NULL, 'z'},
+		{NULL, 0, NULL, 0}
+	};
+
+	while ((ch = getopt_long(argc, argv, "s:t:c:p:P:o:Z:z:", long_options, NULL)) != -1) {
+		switch (ch) {
+			case 's':
+				if (selected) {
+					usage(argv[0]);
+				}
+				selected = SEL_ADD_RULE;
+				source = optarg;
+				break;
+			case 't':
+				target = optarg;
+				break;
+			case 'c':
+				class = optarg;
+				break;
+			case 'p': {
+				perm = optarg;
+				break;
+			}
+			case 'P':
+				policy = optarg;
+				break;
+			case 'o':
+				outfile = optarg;
+				break;
+			case 'Z':
+				if (selected) {
+					usage(argv[0]);
+				}
+				selected = SEL_PERMISSIVE;
+				source = optarg;
+				permissive_value = 1;
+				break;
+			case 'z':
+				if (selected) {
+					usage(argv[0]);
+				}
+				selected = SEL_PERMISSIVE;
+				source = optarg;
+				permissive_value = 0;
+				break;
+			default:
+				usage(argv[0]);
+		}
+	}
+
+	context_t context = {
+		.policy = policy,
+		.outfile = outfile,
+		.source = source,
+		.selected = selected,
+
+		.target = target,
+		.class = class,
+		.perm = perm,
+
+		.permissive_value = permissive_value,
+	};
+
+	rc = run_action(&context);
+	if (rc==2) {
+		usage(argv[0]);
+	}
+	return rc;
 }
