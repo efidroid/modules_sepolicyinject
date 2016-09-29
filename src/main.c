@@ -10,8 +10,10 @@
 #include <stdlib.h>
 #include <stdio.h>
 
-#include "private.h"
-#include "tokenize.h"
+#include <sepolicy_inject.h>
+
+#define SEL_ADD_RULE 1
+#define SEL_PERMISSIVE 2
 
 void usage(char *arg0)
 {
@@ -89,22 +91,51 @@ int main(int argc, char **argv)
 		}
 	}
 
-	context_t context = {
-		.policy = policy,
-		.outfile = outfile,
-		.source = source,
-		.selected = selected,
+    if(!policy) {
+        usage(argv[0]);
+        return 1;
+    }
 
-		.target = target,
-		.class = class,
-		.perm = perm,
+    void *handle = sepolicy_inject_open(policy);
+    if(!handle) {
+        fprintf(stderr, "can't open policy\n");
+        return 1;
+    }
 
-		.permissive_value = permissive_value,
-	};
+    if(selected==SEL_PERMISSIVE) {
+        if(!source) {
+            usage(argv[0]);
+            return 1;
+        }
 
-	rc = sepolicy_inject_internal_run_action(&context);
-	if (rc==2) {
-		usage(argv[0]);
-	}
-	return rc;
+        rc = sepolicy_inject_set_permissive(handle, source, permissive_value);
+        if (rc) {
+            fprintf(stderr, "can't change permissive value\n");
+            return 1;
+        }
+    }
+    else if(selected==SEL_ADD_RULE) {
+        if(!source || !target || !class || !perm) {
+            usage(argv[0]);
+            return 1;
+        }
+
+        rc = sepolicy_inject_add_rule(handle, source, target, class, perm);
+        if (rc) {
+            fprintf(stderr, "can't add rules\n");
+            return 1;
+        }
+    }
+
+    if(!outfile)
+        outfile = policy;
+    rc = sepolicy_inject_write(handle, outfile);
+    if (rc) {
+        fprintf(stderr, "can't write policy\n");
+        return 1;
+    }
+
+    sepolicy_inject_close(handle);
+
+    return 0;
 }

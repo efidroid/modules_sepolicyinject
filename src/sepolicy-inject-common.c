@@ -14,16 +14,16 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <string.h>
-#include <sepol/debug.h>
-#include <sepol/policydb/policydb.h>
-#include <sepol/policydb/expand.h>
-#include <sepol/policydb/link.h>
-#include <sepol/policydb/services.h>
-#include <sepol/policydb/avrule_block.h>
-#include <sepol/policydb/conditional.h>
 
-#include "private.h"
 #include "tokenize.h"
+#include "private.h"
+
+typedef struct {
+	policydb_t policydb;
+	struct policy_file pf;
+	sidtab_t sidtab;
+    sepolicy_if_t interface;
+} pdata_t;
 
 static void *cmalloc(size_t s)
 {
@@ -176,7 +176,6 @@ static int add_rule(const char *s, const char *t, const char *c, char **p, polic
 	return 0;
 }
 
-
 static int load_policy(const char *filename, policydb_t *policydb, struct policy_file *pf)
 {
 	int fd;
@@ -227,124 +226,132 @@ static int load_policy(const char *filename, policydb_t *policydb, struct policy
 	return 0;
 }
 
-int sepolicy_inject_internal_run_action(context_t *context)
+static void* sepolicy_inject_open(const char *policy)
 {
-	char **perms = NULL;
-	policydb_t policydb;
-	struct policy_file pf, outpf;
-	sidtab_t sidtab;
-	FILE *fp;
-	int typeval;
-	type_datum_t *type;
+	pdata_t *pdata;
 
-	int selected = context->selected;
-	int permissive_value = context->permissive_value;
-	const char *policy = context->policy;
-	const char *source = context->source;
-	const char *target = context->target;
-	const char *class = context->class;
-	const char *outfile = context->outfile;
+	pdata = calloc(sizeof(*pdata), 1);
+	if(!pdata)
+		goto err_free;
 
-	if (!selected || !policy)
-		return 2;
+	if (!policy)
+		goto err_free;
 
-	if (!outfile)
-		outfile = policy;
+	sepol_set_policydb(&pdata->policydb);
+	sepol_set_sidtab(&pdata->sidtab);
 
-	if (context->perm) {
-		perms = str_split(context->perm, ',');
-		if (perms == NULL) {
-			fprintf(stderr, "Could not tokenize permissions\n");
-			return 1;
-		}
-	}
-
-	sepol_set_policydb(&policydb);
-	sepol_set_sidtab(&sidtab);
-
-	if (load_policy(policy, &policydb, &pf)) {
+	if (load_policy(policy, &pdata->policydb, &pdata->pf)) {
 		fprintf(stderr, "Could not load policy\n");
-		return 1;
+		goto err_free;
 	}
 
-	if (policydb_load_isids(&policydb, &sidtab))
-		return 1;
+	if (policydb_load_isids(&pdata->policydb, &pdata->sidtab))
+		goto err_free;
 
-	type = hashtab_search(policydb.p_types.table, (const hashtab_key_t)source);
-	if (type == NULL) {
-		fprintf(stderr, "type %s does not exist, creating\n", source);
-		typeval = create_domain(source, &policydb);
-	} else {
-		typeval = type->s.value;
-	}
+	return pdata;
 
-	if (selected == SEL_PERMISSIVE) {
-		if (ebitmap_set_bit(&policydb.permissive_map, typeval, permissive_value)) {
-			fprintf(stderr, "Could not set bit in permissive map\n");
-			return 1;
-		}
-	} else if (selected == SEL_ADD_RULE) {
-		if (add_rule(source, target, class, perms, &policydb)) {
-			fprintf(stderr, "Could not add rule\n");
-			return 1;
-		}
-	} else {
-		fprintf(stderr, "Something strange happened\n");
-		return 1;
-	}
+err_free:
+	free(pdata);
+	return NULL;
+}
+
+static int sepolicy_inject_write(void *handle, const char *outfile) {
+	FILE *fp;
+	struct policy_file outpf;
+	pdata_t *pdata = handle;
 
 	fp = fopen(outfile, "w");
 	if (!fp) {
 		fprintf(stderr, "Could not open outfile\n");
-		return 1;
+		return -1;
 	}
 
 	policy_file_init(&outpf);
 	outpf.type = PF_USE_STDIO;
 	outpf.fp = fp;
 
-	if (policydb_write(&policydb, &outpf)) {
+	if (policydb_write(&pdata->policydb, &outpf)) {
 		fprintf(stderr, "Could not write policy\n");
 		fclose(fp);
-		return 1;
+		return -1;
 	}
 
-	policydb_destroy(&policydb);
 	fclose(fp);
 
 	return 0;
 }
 
-int sepolicy_inject_rule(const char *source, const char *target, const char *class, const char *perm, const char *policy, const char *outfile)
+static int sepolicy_inject_close(void *handle) {
+	pdata_t *pdata = handle;
+
+	policydb_destroy(&pdata->policydb);
+	free(pdata);
+
+	return 0;
+}
+
+static int sepolicy_inject_rule(void *handle, const char *source, const char *target, const char *class, const char *perm)
 {
-	context_t context = {
-		.policy = policy,
-		.outfile = outfile,
-		.source = source,
-		.selected = SEL_ADD_RULE,
+	int i;
+	char **p;
+	int rc;
+	char **perms = NULL;
+	pdata_t *pdata = handle;
 
-		.target = target,
-		.class = class,
-		.perm = strdup(perm),
+	char* permcpy = strdup(perm);
+	if(!permcpy)
+		return -ENOMEM;
 
-		.permissive_value = 0,
-	};
+	perms = str_split(permcpy, ',');
+	free(permcpy);
+	if (perms == NULL) {
+		fprintf(stderr, "Could not tokenize permissions\n");
+		return -1;
+	}
 
-	int rc = sepolicy_inject_internal_run_action(&context);
-	free(context.perm);
+	if (add_rule(source, target, class, perms, &pdata->policydb)) {
+		fprintf(stderr, "Could not add rule\n");
+		rc = -1;
+		goto do_free_perms;
+	}
+
+	rc = 0;
+
+do_free_perms:
+	for (i=0,p=perms; p[i]; i++) {
+		free(p[i]);
+	}
+	free(perms);
+
 	return rc;
 }
 
-int sepolicy_set_permissive(const char *source, int value, const char *policy, const char *outfile)
+static int sepolicy_set_permissive(void *handle, const char *source, int value)
 {
-	context_t context = {
-		.policy = policy,
-		.outfile = outfile,
-		.source = source,
-		.selected = SEL_PERMISSIVE,
+	int typeval;
+	type_datum_t *type;
+	pdata_t *pdata = handle;
 
-		.permissive_value = value,
-	};
+	type = hashtab_search(pdata->policydb.p_types.table, (const hashtab_key_t)source);
+	if (type == NULL) {
+		fprintf(stderr, "type %s does not exist, creating\n", source);
+		typeval = create_domain(source, &pdata->policydb);
+	} else {
+		typeval = type->s.value;
+	}
 
-	return sepolicy_inject_internal_run_action(&context);
+	if (ebitmap_set_bit(&pdata->policydb.permissive_map, typeval, value)) {
+		fprintf(stderr, "Could not set bit in permissive map\n");
+		return 1;
+	}
+
+	return 0;
 }
+
+sepolicy_if_t INTERFACE_NAME = {
+    .open = sepolicy_inject_open,
+    .write = sepolicy_inject_write,
+    .close = sepolicy_inject_close,
+    .add_rule = sepolicy_inject_rule,
+    .set_permissive = sepolicy_set_permissive,
+};

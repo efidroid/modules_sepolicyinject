@@ -12,7 +12,9 @@ include_directories(
 
 # libsepolicy_inject
 add_library(sepolicy_inject
-    src/sepolicy-inject.c
+    src/sepolicy-inject-6.c
+    src/sepolicy-inject-7.c
+    src/sepolicy-inject-public-interface.c
     src/tokenize.c
 )
 
@@ -20,4 +22,4 @@ add_library(sepolicy_inject
 add_executable(sepolicy-inject
     src/main.c
 )
-target_link_libraries(sepolicy-inject sepolicy_inject sepol)
+target_link_libraries(sepolicy-inject sepolicy_inject sepol6 sepol7)

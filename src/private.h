@@ -1,25 +1,20 @@
 #ifndef PRIVATE_H
 #define PRIVATE_H
 
-#define SEL_ADD_RULE 1
-#define SEL_PERMISSIVE 2
+typedef struct {
+    void* (*open)(const char *policy);
+    int (*write)(void *handle, const char *outfile);
+    int (*close)(void *handle);
+    int (*add_rule)(void *handle, const char *source, const char *target, const char *class, const char *perm);
+    int (*set_permissive)(void *handle, const char *source, int value);
+} sepolicy_if_t;
 
 typedef struct {
-	// common
-	const char *policy;
-	const char *outfile;
-	const char *source;
-	int selected;
+    void *pdata;
+    sepolicy_if_t *interface;
+} handle_t;
 
-	// SEL_ADD_RULE
-	const char *target;
-	const char *class;
-	char *perm;
-
-	// SEL_PERMISSIVE
-	int permissive_value;
-} context_t;
-
-int sepolicy_inject_internal_run_action(context_t *context);
+extern sepolicy_if_t interface_selinux6;
+extern sepolicy_if_t interface_selinux7;
 
 #endif // PRIVATE_H
