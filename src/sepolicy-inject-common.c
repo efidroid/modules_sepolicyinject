@@ -290,6 +290,21 @@ static int sepolicy_inject_close(void *handle) {
 	return 0;
 }
 
+static int sepolicy_inject_create_type(pdata_t *pdata, const char *source) {
+	int typeval;
+	type_datum_t *type;
+
+	type = hashtab_search(pdata->policydb.p_types.table, (const hashtab_key_t)source);
+	if (type == NULL) {
+		fprintf(stderr, "type %s does not exist, creating\n", source);
+		typeval = create_domain(source, &pdata->policydb);
+	} else {
+		typeval = type->s.value;
+	}
+
+	return typeval;
+}
+
 static int sepolicy_inject_rule(void *handle, const char *source, const char *target, const char *class, const char *perm)
 {
 	int i;
@@ -308,6 +323,8 @@ static int sepolicy_inject_rule(void *handle, const char *source, const char *ta
 		fprintf(stderr, "Could not tokenize permissions\n");
 		return -1;
 	}
+
+	sepolicy_inject_create_type(pdata, source);
 
 	if (add_rule(source, target, class, perms, &pdata->policydb)) {
 		fprintf(stderr, "Could not add rule\n");
@@ -329,16 +346,9 @@ do_free_perms:
 static int sepolicy_set_permissive(void *handle, const char *source, int value)
 {
 	int typeval;
-	type_datum_t *type;
 	pdata_t *pdata = handle;
 
-	type = hashtab_search(pdata->policydb.p_types.table, (const hashtab_key_t)source);
-	if (type == NULL) {
-		fprintf(stderr, "type %s does not exist, creating\n", source);
-		typeval = create_domain(source, &pdata->policydb);
-	} else {
-		typeval = type->s.value;
-	}
+	typeval = sepolicy_inject_create_type(pdata, source);
 
 	if (ebitmap_set_bit(&pdata->policydb.permissive_map, typeval, value)) {
 		fprintf(stderr, "Could not set bit in permissive map\n");
